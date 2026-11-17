@@ -364,6 +364,97 @@ describe("copyLink", () => {
     vi.advanceTimersByTime(2000);
     expect(copyBtn.textContent).toBe("Copy");
   });
+
+  it("displays toast notification and accessible status announcement on success", async () => {
+    const writeText = vi.fn(() => Promise.resolve());
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    const btn = create();
+    const copyBtn = btn.modal.querySelector(".social-share-copy-btn");
+    const toast = btn.modal.querySelector(".social-share-toast");
+    const status = btn.modal.querySelector(".social-share-copy-status");
+
+    copyBtn.click();
+    await vi.waitFor(() => expect(copyBtn.textContent).toBe("Copied!"));
+    expect(toast.textContent).toBe("Link copied to clipboard!");
+    expect(toast.className).toContain("show");
+    expect(status.textContent).toBe("Link copied to clipboard!");
+
+    vi.advanceTimersByTime(2000);
+    expect(copyBtn.textContent).toBe("Copy");
+    expect(toast.textContent).toBe("");
+    expect(status.textContent).toBe("");
+  });
+
+  it("fails and displays error feedback when URL is empty or whitespace", () => {
+    const writeText = vi.fn(() => Promise.resolve());
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    const onCopy = vi.fn();
+    const btn = create({ onCopy });
+    btn.options.url = "   ";
+    const copyBtn = btn.modal.querySelector(".social-share-copy-btn");
+    const toast = btn.modal.querySelector(".social-share-toast");
+    const status = btn.modal.querySelector(".social-share-copy-status");
+
+    btn.copyLink();
+    expect(copyBtn.textContent).toBe("Failed");
+    expect(copyBtn.classList.contains("failed")).toBe(true);
+    expect(toast.textContent).toBe("Failed to copy link. Please try again.");
+    expect(toast.className).toContain("error");
+    expect(status.textContent).toBe("Failed to copy link. Please try again.");
+    expect(writeText).not.toHaveBeenCalled();
+    expect(onCopy).not.toHaveBeenCalled();
+
+    vi.advanceTimersByTime(2000);
+    expect(copyBtn.textContent).toBe("Copy");
+  });
+
+  it("shows Failed and error feedback when fallback execCommand returns false", () => {
+    vi.stubGlobal("navigator", {});
+    document.execCommand = vi.fn(() => false);
+    const onCopy = vi.fn();
+    const btn = create({ onCopy });
+    const copyBtn = btn.modal.querySelector(".social-share-copy-btn");
+    const toast = btn.modal.querySelector(".social-share-toast");
+
+    btn.copyLink();
+    expect(document.execCommand).toHaveBeenCalledWith("copy");
+    expect(copyBtn.textContent).toBe("Failed");
+    expect(copyBtn.classList.contains("failed")).toBe(true);
+    expect(toast.textContent).toBe("Failed to copy link. Please try again.");
+    expect(onCopy).not.toHaveBeenCalled();
+
+    vi.advanceTimersByTime(2000);
+    expect(copyBtn.textContent).toBe("Copy");
+  });
+
+  it("prevents duplicate concurrent in-flight clipboard requests", async () => {
+    let resolvePromise;
+    const writeText = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          resolvePromise = resolve;
+        })
+    );
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    const btn = create();
+    const copyBtn = btn.modal.querySelector(".social-share-copy-btn");
+
+    btn.copyLink();
+    btn.copyLink(); // Second click while first is still pending
+    expect(writeText).toHaveBeenCalledTimes(1);
+
+    resolvePromise();
+    await vi.waitFor(() => expect(copyBtn.textContent).toBe("Copied!"));
+  });
+
+  it("cleans up temporary textarea in fallbackCopy when input is omitted", () => {
+    document.execCommand = vi.fn(() => true);
+    const btn = create();
+    const copyBtn = btn.modal.querySelector(".social-share-copy-btn");
+    const result = btn.fallbackCopy(null, copyBtn);
+    expect(result).toBe(true);
+    expect(document.querySelector("textarea")).toBeNull();
+  });
 });
 
 describe("analytics", () => {

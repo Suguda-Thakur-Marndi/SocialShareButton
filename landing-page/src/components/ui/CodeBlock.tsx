@@ -4,26 +4,16 @@ import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { highlight } from "sugar-high";
 import { useTranslations } from "next-intl";
 import { CheckIcon, ChevronDownIcon, CopyIcon } from "./Icons";
+import { copyToClipboard } from "@/lib/clipboard";
 
 /** Snippets longer than this collapse behind an expand toggle, since copying is the primary task. */
 const COLLAPSE_AFTER_LINES = 14;
 
 export async function copyText(text: string) {
   try {
-    await navigator.clipboard.writeText(text);
-    return true;
+    return await copyToClipboard(text);
   } catch {
-    // Fallback for insecure contexts or browsers without the async clipboard API
-    const textarea = document.createElement("textarea");
-    textarea.value = text;
-    textarea.setAttribute("readonly", "");
-    textarea.style.position = "fixed";
-    textarea.style.opacity = "0";
-    document.body.appendChild(textarea);
-    textarea.select();
-    const ok = document.execCommand("copy");
-    textarea.remove();
-    return ok;
+    return false;
   }
 }
 

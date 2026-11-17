@@ -83,6 +83,7 @@ class SocialShareButton {
     this.ownsBodyLock = false; // Track if this instance owns the body overflow lock
     this.eventsAttached = false; // Guard against multiple attachEvents() calls
     this.isDestroyed = false; // Track if instance has been destroyed (prevents async callbacks)
+    this.isCopying = false; // Guard against duplicate concurrent copy operations
 
     this._dynamicUrl = !options.url; // true when url was not provided; updateCurrentPage() will overwrite on SPA route changes
     this._dynamicTitle = !options.title; // true when title was not provided; updateCurrentPage() will overwrite on SPA route changes
@@ -157,7 +158,9 @@ class SocialShareButton {
           <div class="social-share-link-input">
           </div>
           <button class="social-share-copy-btn"></button>
+          <span class="social-share-copy-status" role="status" aria-live="polite"></span>
         </div>
+        <div class="social-share-toast" role="alert" aria-live="polite"></div>
       </div>
     `;
 
@@ -491,40 +494,37 @@ class SocialShareButton {
   }
 
   copyLink() {
-    const input = this.modal.querySelector(".social-share-link-input input");
-    const copyBtn = this.modal.querySelector(".social-share-copy-btn");
+    // Guard against execution after destroy or duplicate concurrent operations
+    if (this.isDestroyed || this.isCopying) return;
+
+    const input = this.modal ? this.modal.querySelector(".social-share-link-input input") : null;
+    const copyBtn = this.modal ? this.modal.querySelector(".social-share-copy-btn") : null;
+    const url = this.options.url;
+
+    // Validate URL is present and non-empty
+    if (!url || typeof url !== "string" || !url.trim()) {
+      this._handleCopyFeedback(false, copyBtn);
+      return;
+    }
 
     // Check if clipboard API is available
-    if (navigator.clipboard && navigator.clipboard.writeText) {
+    if (
+      typeof navigator !== "undefined" &&
+      navigator.clipboard &&
+      typeof navigator.clipboard.writeText === "function"
+    ) {
+      this.isCopying = true;
       navigator.clipboard
-        .writeText(this.options.url)
+        .writeText(url)
         .then(() => {
+          this.isCopying = false;
           // Guard against async callback after destroy
           if (this.isDestroyed) return;
-
-          copyBtn.textContent = this.options.labels.copied;
-          copyBtn.classList.add("copied");
-          this._emit("social_share_copy", "copy");
-
-          if (this.options.onCopy) {
-            this.options.onCopy(this.options.url);
-          }
-
-          // Clear any existing feedback timeout
-          if (this.feedbackTimeout) {
-            clearTimeout(this.feedbackTimeout);
-          }
-
-          // Track feedback timeout to prevent callback after destroy
-          this.feedbackTimeout = setTimeout(() => {
-            if (this.isDestroyed || !copyBtn) return; // Safety check
-            copyBtn.textContent = this.options.labels.copy;
-            copyBtn.classList.remove("copied");
-            this.feedbackTimeout = null;
-          }, 2000);
+          this._handleCopyFeedback(true, copyBtn);
         })
         .catch(() => {
-          // Fallback to manual selection
+          this.isCopying = false;
+          // Fallback to manual selection / execCommand
           this.fallbackCopy(input, copyBtn);
         });
     } else {
@@ -535,48 +535,110 @@ class SocialShareButton {
 
   fallbackCopy(input, copyBtn) {
     // Guard against execution after destroy
+    if (this.isDestroyed) return false;
+
+    const url = this.options.url;
+    if (!url || typeof url !== "string" || !url.trim()) {
+      this._handleCopyFeedback(false, copyBtn);
+      return false;
+    }
+
+    let tempTextarea = null;
+    let success = false;
+    try {
+      if (input) {
+        input.select();
+        input.setSelectionRange(0, 99999); // For mobile devices
+      } else if (typeof document !== "undefined") {
+        tempTextarea = document.createElement("textarea");
+        tempTextarea.value = url;
+        tempTextarea.style.position = "fixed";
+        tempTextarea.style.opacity = "0";
+        tempTextarea.setAttribute("readonly", "");
+        document.body.appendChild(tempTextarea);
+        tempTextarea.select();
+        tempTextarea.setSelectionRange(0, tempTextarea.value.length);
+      }
+
+      success = typeof document !== "undefined" && Boolean(document.execCommand("copy"));
+      if (!success) {
+        throw new Error("Clipboard copy failed");
+      }
+
+      this._handleCopyFeedback(true, copyBtn);
+      return true;
+    } catch (_err) {
+      this._handleCopyFeedback(false, copyBtn);
+      return false;
+    } finally {
+      if (tempTextarea && tempTextarea.parentNode) {
+        tempTextarea.parentNode.removeChild(tempTextarea);
+      }
+    }
+  }
+
+  _handleCopyFeedback(success, copyBtn) {
     if (this.isDestroyed) return;
 
-    try {
-      input.select();
-      input.setSelectionRange(0, 99999); // For mobile devices
-      document.execCommand("copy");
+    const toast = this.modal ? this.modal.querySelector(".social-share-toast") : null;
+    const statusSpan = this.modal ? this.modal.querySelector(".social-share-copy-status") : null;
 
-      copyBtn.textContent = this.options.labels.copied;
-      copyBtn.classList.add("copied");
+    if (success) {
+      if (copyBtn) {
+        copyBtn.textContent = this.options.labels.copied;
+        copyBtn.classList.add("copied");
+        copyBtn.classList.remove("failed");
+      }
+      if (toast) {
+        toast.textContent = "Link copied to clipboard!";
+        toast.className = "social-share-toast show";
+      }
+      if (statusSpan) {
+        statusSpan.textContent = "Link copied to clipboard!";
+      }
+
       this._emit("social_share_copy", "copy");
 
       if (this.options.onCopy) {
         this.options.onCopy(this.options.url);
       }
-
-      // Clear any existing feedback timeout
-      if (this.feedbackTimeout) {
-        clearTimeout(this.feedbackTimeout);
+    } else {
+      if (copyBtn) {
+        copyBtn.textContent = this.options.labels.copyFailed;
+        copyBtn.classList.remove("copied");
+        copyBtn.classList.add("failed");
       }
+      if (toast) {
+        toast.textContent = "Failed to copy link. Please try again.";
+        toast.className = "social-share-toast show error";
+      }
+      if (statusSpan) {
+        statusSpan.textContent = "Failed to copy link. Please try again.";
+      }
+    }
 
-      // Track feedback timeout to prevent callback after destroy
-      this.feedbackTimeout = setTimeout(() => {
-        if (this.isDestroyed || !copyBtn) return; // Safety check
+    // Clear any existing feedback timeout
+    if (this.feedbackTimeout) {
+      clearTimeout(this.feedbackTimeout);
+    }
+
+    // Track feedback timeout to prevent callback after destroy
+    this.feedbackTimeout = setTimeout(() => {
+      if (this.isDestroyed) return;
+      if (copyBtn) {
         copyBtn.textContent = this.options.labels.copy;
         copyBtn.classList.remove("copied");
-        this.feedbackTimeout = null;
-      }, 2000);
-    } catch (_err) {
-      copyBtn.textContent = this.options.labels.copyFailed;
-
-      // Clear any existing feedback timeout
-      if (this.feedbackTimeout) {
-        clearTimeout(this.feedbackTimeout);
+        copyBtn.classList.remove("failed");
       }
-
-      // Track feedback timeout to prevent callback after destroy
-      this.feedbackTimeout = setTimeout(() => {
-        if (this.isDestroyed || !copyBtn) return; // Safety check
-        copyBtn.textContent = this.options.labels.copy;
-        this.feedbackTimeout = null;
-      }, 2000);
-    }
+      if (toast) {
+        toast.className = "social-share-toast";
+        toast.textContent = "";
+      }
+      if (statusSpan) {
+        statusSpan.textContent = "";
+      }
+      this.feedbackTimeout = null;
+    }, 2000);
   }
 
   destroy() {
@@ -605,6 +667,7 @@ class SocialShareButton {
       clearTimeout(this.feedbackTimeout);
       this.feedbackTimeout = null;
     }
+    this.isCopying = false;
 
     // Remove custom color handlers
     if (this.button && this.customColorMouseEnterHandler) {
